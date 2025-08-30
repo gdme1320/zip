@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"sync"
 
 	"github.com/gdme1320/zip/internal"
@@ -21,71 +22,68 @@ type ZipFile struct {
 type UnzipConfig struct {
 	ZipPath          string // zip文件路径
 	OutputPath       string // 输出路径
-	FileEncoding     string // 文件编码 (gbk, utf8)
+	FileEncoding     string // 文件编码 (gbk, utf8, windows)
 	Password         string // 密码
-	PasswordEncoding string // 密码编码 (gbk, utf8)
+	PasswordEncoding string // 密码编码 (gbk, utf8, windows)
 	Workers          int    // 并发工作线程数
 	Verbose          bool   // 详细输出
 	Quiet            bool   // 静默输出
 }
 
-// 解析命令行参数
-func parseFlags() *UnzipConfig {
-	config := &UnzipConfig{}
-
-	flag.StringVar(&config.ZipPath, "zip", "", "zip文件路径 (必需)")
-	flag.StringVar(&config.OutputPath, "output", "", "解压输出路径 (必需)")
-	flag.StringVar(&config.FileEncoding, "encoding", "utf8", "文件名编码 (gbk, utf8)")
-	flag.StringVar(&config.Password, "password", "", "解压密码")
-	flag.StringVar(&config.PasswordEncoding, "pwd-encoding", "utf8", "密码编码 (gbk, utf8)")
-	flag.IntVar(&config.Workers, "workers", 4, "并发工作线程数")
-	flag.BoolVar(&config.Verbose, "verbose", false, "详细输出模式")
-	flag.BoolVar(&config.Quiet, "quiet", false, "静默模式，只输出错误")
-
-	flag.Usage = func() {
-		fmt.Printf("用法: %s [选项]\n", os.Args[0])
-		fmt.Printf("\n选项:\n")
-		flag.PrintDefaults()
-		fmt.Printf("\n示例:\n")
-		fmt.Printf("  %s -zip archive.zip -output ./extracted -password 123456\n", os.Args[0])
-		fmt.Printf("  %s -zip archive.zip -output ./extracted -encoding utf8 -password 密码 -pwd-encoding gbk\n", os.Args[0])
-		fmt.Printf("  %s -zip archive.zip -output ./extracted -verbose\n", os.Args[0])
-		fmt.Printf("  %s -zip archive.zip -output ./extracted -quiet\n", os.Args[0])
-	}
-
-	flag.Parse()
-
-	return config
+// usage prints the application's usage information.
+func usage() {
+	fmt.Printf("用法: %s <命令> [选项] [文件]\n", os.Args[0])
+	fmt.Println("\n命令:")
+	fmt.Println("  x        从归档中解压文件")
+	fmt.Println("  t        列出归档中的内容")
+	fmt.Println("\n示例:")
+	fmt.Printf("  %s x archive.zip -C ./extracted -p 123456\n", os.Args[0])
+	fmt.Printf("  %s t archive.zip -e gbk\n", os.Args[0])
 }
 
-// 验证配置参数
-func validateConfig(config *UnzipConfig) error {
-	if config.ZipPath == "" {
-		return utils.Errorf("必须指定zip文件路径 (-zip)")
+// parseAndValidateFlags parses command-line flags and validates the configuration.
+func parseAndValidateFlags() (*UnzipConfig, string, error) {
+	if len(os.Args) < 2 {
+		return nil, "", fmt.Errorf("需要一个命令 (x 或 t)")
 	}
 
-	if config.OutputPath == "" {
-		return utils.Errorf("必须指定输出路径 (-output)")
+	command := os.Args[1]
+	args := os.Args[2:]
+	config := &UnzipConfig{}
+
+	fs := flag.NewFlagSet(command, flag.ExitOnError)
+
+	fs.StringVar(&config.OutputPath, "C", ".", "解压输出路径")
+	fs.StringVar(&config.FileEncoding, "e", "", "文件名编码 (gbk, utf8)")
+	fs.StringVar(&config.Password, "p", "", "解压密码")
+	fs.StringVar(&config.PasswordEncoding, "pwd-encoding", "utf8", "密码编码 (gbk, utf8)")
+	fs.IntVar(&config.Workers, "workers", 4, "并发工作线程数")
+	fs.BoolVar(&config.Verbose, "v", false, "详细输出模式")
+	fs.BoolVar(&config.Quiet, "q", false, "静默模式，只输出错误")
+
+	fs.Usage = func() {
+		fmt.Printf("用法: %s %s [选项] <zip文件>\n", os.Args[0], command)
+		fmt.Println("\n选项:")
+		fs.PrintDefaults()
 	}
 
-	if config.FileEncoding != "gbk" && config.FileEncoding != "utf8" {
-		return utils.Errorf("文件编码必须是 gbk 或 utf8")
-	}
+	fs.Parse(args)
 
-	if config.PasswordEncoding != "gbk" && config.PasswordEncoding != "utf8" {
-		return utils.Errorf("密码编码必须是 gbk 或 utf8")
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return nil, "", fmt.Errorf("需要指定一个zip文件")
 	}
+	config.ZipPath = fs.Arg(0)
 
 	if config.Workers < 1 {
-		return utils.Errorf("工作线程数必须大于0")
+		return nil, "", fmt.Errorf("工作线程数必须大于0")
 	}
 
-	// 检查 verbose 和 quiet 的互斥性
 	if config.Verbose && config.Quiet {
-		return utils.Errorf("verbose 和 quiet 选项不能同时使用")
+		return nil, "", fmt.Errorf("verbose 和 quiet 选项不能同时使用")
 	}
 
-	return nil
+	return config, command, nil
 }
 
 func getPassword(config *UnzipConfig) ([]byte, error) {
@@ -101,11 +99,31 @@ func getPassword(config *UnzipConfig) ([]byte, error) {
 func processFile(file *zip.File, outputPath string, encoding string, password []byte, wg *sync.WaitGroup, semaphore chan struct{}) {
 	defer wg.Done()
 	defer func() { <-semaphore }()
-	if password != nil {
-		utils.Debug("使用密码解压文件: %s", file.Name)
+	if file.IsEncrypted() {
+		if password == nil {
+			name, err := internal.ListFile(file, encoding)
+			if err != nil {
+				name = file.Name
+			}
+			utils.Errorf("File %s is encrypted but no password provided\n", name)
+		}
 		file.SetPassword(password)
 	}
-	internal.ProcessSingleFile(file, outputPath, encoding, password)
+	outFile, err := internal.ProcessSingleFile(file, outputPath, encoding, password)
+	if err != nil {
+		utils.Error("解压文件 %s 失败: %v", file.Name, err)
+		return
+	}
+	fileName := path.Base(outFile)
+	ok, err := internal.ValidateZip(file, outFile)
+	if err != nil {
+		utils.Error("校验文件 %s 失败: %v", fileName, err)
+		return
+	}
+	if !ok {
+		utils.Error("文件校验不通过 %s", fileName)
+	}
+	utils.Info("解压完成: %s, validate ok\n", fileName)
 }
 
 // 主解压函数
@@ -149,9 +167,32 @@ func unzip(config *UnzipConfig) error {
 	return nil
 }
 
+func listFiles(config *UnzipConfig) error {
+	reader, err := zip.OpenReader(config.ZipPath)
+	if err != nil {
+		return utils.Errorf("打开zip文件失败: %v", err)
+	}
+	defer reader.Close()
+	for _, file := range reader.File {
+		fileName, err := internal.ListFile(file, config.FileEncoding)
+		if err != nil {
+			utils.Error("列出文件 %s 失败: %v", file.Name, err)
+		}
+		fmt.Println(fileName)
+	}
+	return nil
+}
+
 func main() {
-	// 解析命令行参数
-	config := parseFlags()
+	// 解析和验证命令行参数
+	config, command, err := parseAndValidateFlags()
+	if err != nil {
+		fmt.Errorf("参数错误: %v\n", err)
+		if len(os.Args) < 2 {
+			usage()
+		}
+		os.Exit(1)
+	}
 
 	// 初始化日志系统
 	var logLevel utils.LogLevel
@@ -164,22 +205,28 @@ func main() {
 	}
 	utils.InitLogger(logLevel)
 
-	// 验证配置
-	if err := validateConfig(config); err != nil {
-		utils.Error("配置错误: %v", err)
-		flag.Usage()
-		os.Exit(1)
-	}
-
 	// 检查zip文件是否存在
 	if _, err := os.Stat(config.ZipPath); os.IsNotExist(err) {
 		utils.Error("错误: zip文件不存在: %s", config.ZipPath)
 		os.Exit(1)
 	}
 
-	// 开始解压
-	if err := unzip(config); err != nil {
-		utils.Error("解压失败: %v", err)
+	switch command {
+	case "x":
+		// 开始解压
+		if err := unzip(config); err != nil {
+			utils.Error("解压失败: %v", err)
+			os.Exit(1)
+		}
+	case "t":
+		// 列出文件
+		if err := listFiles(config); err != nil {
+			utils.Error("列出文件失败: %v", err)
+			os.Exit(1)
+		}
+	default:
+		utils.Error("未知命令: %s", command)
+		usage()
 		os.Exit(1)
 	}
 }

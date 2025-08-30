@@ -455,12 +455,12 @@ func (h *FileHeader) setEncryptionBit() {
 }
 
 // SetPassword sets the password used for encryption/decryption.
-func (h *FileHeader) SetPassword(password string) {
+func (h *FileHeader) SetPassword(password []byte) {
 	if !h.IsEncrypted() {
 		h.setEncryptionBit()
 	}
 	h.password = func() []byte {
-		return []byte(password)
+		return password
 	}
 }
 
@@ -473,7 +473,7 @@ type passwordFn func() []byte
 // contents will be encrypted with AES-256 using the given password. The
 // file's contents must be written to the io.Writer before the next call
 // to Create, CreateHeader, or Close.
-func (w *Writer) Encrypt(name string, password string, enc EncryptionMethod) (io.Writer, error) {
+func (w *Writer) Encrypt(name string, password []byte, enc EncryptionMethod) (io.Writer, error) {
 	fh := &FileHeader{
 		Name:   name,
 		Method: Deflate,
