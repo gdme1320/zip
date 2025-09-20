@@ -107,6 +107,7 @@ func ValidateZip(zipFile *zip.File, fullPath string) (bool, error) {
 	if info.Size() != int64(zipFile.UncompressedSize64) {
 		return false, nil
 	}
+	utils.Info("Size matched: %d", info.Size())
 
 	hasher := crc32.NewIEEE()
 	outFile, _ := os.Open(fullPath)
@@ -118,5 +119,6 @@ func ValidateZip(zipFile *zip.File, fullPath string) (bool, error) {
 	if calculatedCRC32 != zipFile.CRC32 {
 		return false, nil
 	}
+	utils.Info("Crc matched: %d", calculatedCRC32)
 	return true, nil
 }

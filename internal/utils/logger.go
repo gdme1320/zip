@@ -34,7 +34,7 @@ func InitLogger(level LogLevel) {
 	errorLogger = log.New(os.Stderr, "ERROR: ", log.LstdFlags)
 
 	// 信息日志输出到 stdout
-	infoLogger = log.New(os.Stdout, "", log.LstdFlags)
+	infoLogger = log.New(os.Stdout, "", 0)
 
 	// 调试日志输出到 stdout
 	debugLogger = log.New(os.Stdout, "DEBUG: ", log.LstdFlags)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"sync"
 
 	"github.com/gdme1320/zip/internal"
@@ -25,9 +26,10 @@ type UnzipConfig struct {
 	FileEncoding     string // 文件编码 (gbk, utf8, windows)
 	Password         string // 密码
 	PasswordEncoding string // 密码编码 (gbk, utf8, windows)
-	Workers          int    // 并发工作线程数
-	Verbose          bool   // 详细输出
-	Quiet            bool   // 静默输出
+	ValidateCrc      bool
+	Workers          int  // 并发工作线程数
+	Verbose          bool // 详细输出
+	Quiet            bool // 静默输出
 }
 
 // usage prints the application's usage information.
@@ -35,7 +37,8 @@ func usage() {
 	fmt.Printf("用法: %s <命令> [选项] [文件]\n", os.Args[0])
 	fmt.Println("\n命令:")
 	fmt.Println("  x        从归档中解压文件")
-	fmt.Println("  t        列出归档中的内容")
+	fmt.Println("  l        列出归档中的内容")
+	fmt.Println("  t        Validate zip file with extracted")
 	fmt.Println("\n示例:")
 	fmt.Printf("  %s x archive.zip -C ./extracted -p 123456\n", os.Args[0])
 	fmt.Printf("  %s t archive.zip -e gbk\n", os.Args[0])
@@ -57,7 +60,8 @@ func parseAndValidateFlags() (*UnzipConfig, string, error) {
 	fs.StringVar(&config.FileEncoding, "e", "", "文件名编码 (gbk, utf8)")
 	fs.StringVar(&config.Password, "p", "", "解压密码")
 	fs.StringVar(&config.PasswordEncoding, "pwd-encoding", "utf8", "密码编码 (gbk, utf8)")
-	fs.IntVar(&config.Workers, "workers", 4, "并发工作线程数")
+	fs.IntVar(&config.Workers, "workers", 1, "并发工作线程数")
+	fs.BoolVar(&config.ValidateCrc, "c", false, "Validate CRC after extraction")
 	fs.BoolVar(&config.Verbose, "v", false, "详细输出模式")
 	fs.BoolVar(&config.Quiet, "q", false, "静默模式，只输出错误")
 
@@ -96,12 +100,12 @@ func getPassword(config *UnzipConfig) ([]byte, error) {
 	return nil, nil
 }
 
-func processFile(file *zip.File, outputPath string, encoding string, password []byte, wg *sync.WaitGroup, semaphore chan struct{}) {
+func processFile(file *zip.File, config *UnzipConfig, password []byte, wg *sync.WaitGroup, semaphore chan struct{}) {
 	defer wg.Done()
 	defer func() { <-semaphore }()
 	if file.IsEncrypted() {
 		if password == nil {
-			name, err := internal.ListFile(file, encoding)
+			name, err := internal.ListFile(file, config.FileEncoding)
 			if err != nil {
 				name = file.Name
 			}
@@ -109,21 +113,27 @@ func processFile(file *zip.File, outputPath string, encoding string, password []
 		}
 		file.SetPassword(password)
 	}
-	outFile, err := internal.ProcessSingleFile(file, outputPath, encoding, password)
+	outFile, err := internal.ProcessSingleFile(file, config.OutputPath, config.FileEncoding, password)
 	if err != nil {
 		utils.Error("解压文件 %s 失败: %v", file.Name, err)
 		return
 	}
-	fileName := path.Base(outFile)
-	ok, err := internal.ValidateZip(file, outFile)
+	// fileName := path.Base(outFile)
+	fileName, err := filepath.Rel(config.OutputPath, outFile)
 	if err != nil {
-		utils.Error("校验文件 %s 失败: %v", fileName, err)
-		return
+		fileName = file.Name
 	}
-	if !ok {
-		utils.Error("文件校验不通过 %s", fileName)
+	if config.ValidateCrc {
+		ok, err := internal.ValidateZip(file, outFile)
+		if err != nil {
+			utils.Error("校验文件 %s 失败: %v", fileName, err)
+			return
+		}
+		if !ok {
+			utils.Error("文件校验不通过 %s", fileName)
+		}
 	}
-	utils.Info("解压完成: %s, validate ok\n", fileName)
+	utils.Info(fileName)
 }
 
 // 主解压函数
@@ -147,7 +157,7 @@ func unzip(config *UnzipConfig) error {
 
 	// 统计文件数量
 	totalFiles := len(reader.File)
-	utils.Info("开始解压 %s，共 %d 个文件", config.ZipPath, totalFiles)
+	utils.Info("Extracing %s，%d files", config.ZipPath, totalFiles)
 
 	// 创建信号量控制并发数
 	semaphore := make(chan struct{}, config.Workers)
@@ -157,13 +167,12 @@ func unzip(config *UnzipConfig) error {
 	for _, file := range reader.File {
 		wg.Add(1)
 		semaphore <- struct{}{} // 获取信号量
-		go processFile(file, config.OutputPath, config.FileEncoding, password, &wg, semaphore)
+		go processFile(file, config, password, &wg, semaphore)
 	}
 
 	// 等待所有文件处理完成
 	wg.Wait()
 
-	utils.Info("解压完成！输出路径: %s", config.OutputPath)
 	return nil
 }
 
@@ -179,6 +188,30 @@ func listFiles(config *UnzipConfig) error {
 			utils.Error("列出文件 %s 失败: %v", file.Name, err)
 		}
 		fmt.Println(fileName)
+	}
+	return nil
+}
+
+func validateExtracted(config *UnzipConfig) error {
+	reader, err := zip.OpenReader(config.ZipPath)
+	if err != nil {
+		return utils.Errorf("打开zip文件失败: %v", err)
+	}
+	defer reader.Close()
+	for _, file := range reader.File {
+		fileName, err := internal.ListFile(file, config.FileEncoding)
+		if err != nil {
+			return utils.Errorf("列出文件 %s 失败: %v", file.Name, err)
+		}
+		utils.Info("Validating file: %s", fileName)
+		ok, err := internal.ValidateZip(file, path.Join(config.OutputPath, fileName))
+		if err != nil {
+			return utils.Errorf("Unable to validate file %s", fileName)
+		}
+		if !ok {
+			utils.Info("Vlidate file %s failed", fileName)
+			break
+		}
 	}
 	return nil
 }
@@ -218,10 +251,14 @@ func main() {
 			utils.Error("解压失败: %v", err)
 			os.Exit(1)
 		}
-	case "t":
+	case "l":
 		// 列出文件
 		if err := listFiles(config); err != nil {
 			utils.Error("列出文件失败: %v", err)
+			os.Exit(1)
+		}
+	case "t":
+		if err := validateExtracted(config); err != nil {
 			os.Exit(1)
 		}
 	default:
