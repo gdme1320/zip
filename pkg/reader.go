@@ -328,6 +328,12 @@ func readDirectoryHeader(f *File, r io.Reader) error {
 				f.aesStrength = eb.uint8()
 				// set the actual compression method.
 				f.Method = eb.uint16()
+			case unicodePathExtraId:
+				f.UnicodePath = &UnicodePath{
+					Version: eb.uint8(),
+					NameCrc: eb.uint32(),
+					Name:    string(eb[:]), // utf-8 name
+				}
 			}
 			b = b[size:]
 		}

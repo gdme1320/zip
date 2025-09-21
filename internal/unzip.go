@@ -12,20 +12,26 @@ import (
 )
 
 // To guess the real file name
-func getFileName(name string, encoding string) (string, error) {
+func getFileName(zipFile *zip.File, encoding string) (string, error) {
+	if zipFile.UnicodePath != nil {
+		n := zipFile.UnicodePath.Name
+		if n != "" {
+			return n, nil
+		}
+	}
 	if encoding == "utf8" || encoding == "utf-8" {
-		return name, nil
+		return zipFile.Name, nil
 	}
 	if encoding == "" {
-		n, e := charDet([]byte(name), "")
+		n, e := charDet([]byte(zipFile.Name), "")
 		if e != nil {
 			return n, nil
 		}
-		return "", errors.New("Unable to detect encoding")
+		return "", errors.New("unable to detect encoding")
 	}
 	d := createDecoder(encoding)
 	if d != nil {
-		n, err := decodeWithEncoding([]byte(name), d)
+		n, err := decodeWithEncoding([]byte(zipFile.Name), d)
 		if err != nil {
 			return "", err
 		}
@@ -36,7 +42,7 @@ func getFileName(name string, encoding string) (string, error) {
 }
 
 func ListFile(zipFile *zip.File, encoding string) (string, error) {
-	fileName, err := getFileName(zipFile.Name, encoding)
+	fileName, err := getFileName(zipFile, encoding)
 	if err != nil {
 		return "", err
 	}
@@ -47,7 +53,7 @@ func ListFile(zipFile *zip.File, encoding string) (string, error) {
 // Return the full path of extracted file.
 func ProcessSingleFile(args ZipFileProcessArgs) (string, error) {
 	zipFile := args.GetZipFile()
-	fileName, err := getFileName(zipFile.Name, args.GetEncoding())
+	fileName, err := getFileName(zipFile, args.GetEncoding())
 	if err != nil {
 		return "", err
 	}

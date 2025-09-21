@@ -65,9 +65,17 @@ const (
 	uint32max = (1 << 32) - 1
 
 	// extra header id's
-	zip64ExtraId     = 0x0001 // zip64 Extended Information Extra Field
-	winzipAesExtraId = 0x9901 // winzip AES Extra Field
+	zip64ExtraId       = 0x0001 // zip64 Extended Information Extra Field
+	winzipAesExtraId   = 0x9901 // winzip AES Extra Field
+	unicodePathExtraId = 0x7075 // Info-ZIP Unicode Path Extra Field
 )
+
+// Extra info: Unicode path
+type UnicodePath struct {
+	Version uint8
+	NameCrc uint32
+	Name    string
+}
 
 // FileHeader describes a file within a zip file.
 // See the zip spec for details.
@@ -105,6 +113,8 @@ type FileHeader struct {
 	password    passwordFn // Returns the password to use when reading/writing
 	ae          uint16
 	aesStrength byte
+
+	UnicodePath *UnicodePath
 }
 
 // FileInfo returns an os.FileInfo for the FileHeader.
