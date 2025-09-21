@@ -11,6 +11,7 @@ import (
 	zip "github.com/gdme1320/zip/pkg"
 )
 
+// To guess the real file name
 func getFileName(name string, encoding string) (string, error) {
 	if encoding == "utf8" || encoding == "utf-8" {
 		return name, nil
@@ -35,7 +36,6 @@ func getFileName(name string, encoding string) (string, error) {
 }
 
 func ListFile(zipFile *zip.File, encoding string) (string, error) {
-	// 获取文件名
 	fileName, err := getFileName(zipFile.Name, encoding)
 	if err != nil {
 		return "", err
@@ -43,18 +43,21 @@ func ListFile(zipFile *zip.File, encoding string) (string, error) {
 	return fileName, nil
 }
 
-// 处理zip中单个文件解压
-func ProcessSingleFile(zipFile *zip.File, outputPath string, encoding string, password []byte) (string, error) {
-	// 获取文件名
-	fileName, err := getFileName(zipFile.Name, encoding)
+// Process a single zip file entry.
+// Return the full path of extracted file.
+func ProcessSingleFile(args ZipFileProcessArgs) (string, error) {
+	zipFile := args.GetZipFile()
+	fileName, err := getFileName(zipFile.Name, args.GetEncoding())
 	if err != nil {
 		return "", err
 	}
+	if !args.OnFileName(fileName) {
+		return "", nil
+	}
 
-	// 构建完整输出路径
-	fullPath := filepath.Join(outputPath, fileName)
+	fullPath := filepath.Join(args.GetOutputPath(), fileName)
 
-	// 如果是目录，则创建目录
+	// Create directory if
 	if zipFile.FileInfo().IsDir() {
 		if err := os.MkdirAll(fullPath, 0755); err != nil {
 			utils.Error("创建目录失败 %s: %v", fullPath, err)
@@ -63,14 +66,13 @@ func ProcessSingleFile(zipFile *zip.File, outputPath string, encoding string, pa
 		return fullPath, nil
 	}
 
-	// 确保父目录存在
+	// Ensure parent directories
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		utils.Error("创建目录失败 %s: %v", dir, err)
 		return "", err
 	}
 
-	// 打开zip文件
 	rc, err := zipFile.Open()
 	if err != nil {
 		utils.Error("打开zip文件失败 %s: %v", fileName, err)
@@ -78,7 +80,7 @@ func ProcessSingleFile(zipFile *zip.File, outputPath string, encoding string, pa
 	}
 	defer rc.Close()
 
-	// 创建输出文件
+	// Create output file
 	outFile, err := os.Create(fullPath)
 	if err != nil {
 		utils.Error("创建文件失败 %s: %v", fullPath, err)
@@ -91,7 +93,7 @@ func ProcessSingleFile(zipFile *zip.File, outputPath string, encoding string, pa
 		return "", err
 	}
 
-	// 设置文件权限
+	// Set file permissions
 	if err := outFile.Chmod(zipFile.Mode()); err != nil {
 		utils.Error("设置文件权限失败 %s: %v", fullPath, err)
 	}
@@ -99,6 +101,8 @@ func ProcessSingleFile(zipFile *zip.File, outputPath string, encoding string, pa
 }
 
 func ValidateZip(zipFile *zip.File, fullPath string) (bool, error) {
+	utils.Stdout(utils.ZipValidator, "Validating file %s: ", fullPath)
+
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		utils.Error("获取文件信息失败 %s: %v", fullPath, err)
@@ -107,7 +111,7 @@ func ValidateZip(zipFile *zip.File, fullPath string) (bool, error) {
 	if info.Size() != int64(zipFile.UncompressedSize64) {
 		return false, nil
 	}
-	utils.Info("Size matched: %d", info.Size())
+	utils.Stdout(utils.ZipValidator, "Size matched: %d; ", info.Size())
 
 	hasher := crc32.NewIEEE()
 	outFile, _ := os.Open(fullPath)
@@ -119,6 +123,6 @@ func ValidateZip(zipFile *zip.File, fullPath string) (bool, error) {
 	if calculatedCRC32 != zipFile.CRC32 {
 		return false, nil
 	}
-	utils.Info("Crc matched: %d", calculatedCRC32)
+	utils.Stdout(utils.ZipValidator, "Crc matched: %d; \n", calculatedCRC32)
 	return true, nil
 }

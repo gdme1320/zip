@@ -293,14 +293,31 @@ func readDirectoryHeader(f *File, r io.Reader) error {
 			switch tag {
 			case zip64ExtraId:
 				// update directory values from the zip64 extra block
-				if len(eb) >= 8 {
-					f.UncompressedSize64 = eb.uint64()
+				// fix:
+				// zip64 extra fields: stored multiple of n bytes, in this order:
+				// uncompressed size    8 bytes
+				// compressed size      8 bytes
+				// relative header offset 8 bytes
+				// disk start number    4 bytes
+				// but only if the corresponding original value is 0xFFFFFFFF or 0xFFFF (per the spec)
+				var zip64updaters []func(uint64) = make([]func(uint64), 0)
+				if f.UncompressedSize == uint32max {
+					zip64updaters = append(zip64updaters, func(v uint64) { f.UncompressedSize64 = v })
 				}
-				if len(eb) >= 8 {
-					f.CompressedSize64 = eb.uint64()
+				if f.CompressedSize == uint32max {
+					zip64updaters = append(zip64updaters, func(v uint64) { f.CompressedSize64 = v })
 				}
-				if len(eb) >= 8 {
-					f.headerOffset = int64(eb.uint64())
+				if f.headerOffset == int64(uint32max) {
+					zip64updaters = append(zip64updaters, func(v uint64) { f.headerOffset = int64(v) })
+				}
+				var i int
+				for i = 0; len(eb) >= 8; i++ {
+					u := eb.uint64()
+					if i < len(zip64updaters) {
+						zip64updaters[i](u)
+					} else {
+						break
+					}
 				}
 			case winzipAesExtraId:
 				// grab the AE version

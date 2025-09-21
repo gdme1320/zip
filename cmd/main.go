@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/gdme1320/zip/internal"
@@ -22,6 +23,7 @@ type ZipFile struct {
 // UnzipConfig 解压配置
 type UnzipConfig struct {
 	ZipPath          string // zip文件路径
+	ZipFile          string // 要解析的zip文件名，泛匹配
 	OutputPath       string // 输出路径
 	FileEncoding     string // 文件编码 (gbk, utf8, windows)
 	Password         string // 密码
@@ -30,6 +32,41 @@ type UnzipConfig struct {
 	Workers          int  // 并发工作线程数
 	Verbose          bool // 详细输出
 	Quiet            bool // 静默输出
+
+	zipFile     *zip.File
+	password    []byte
+	filePattern string
+}
+
+// UnzipConfig implements ZipFileProcessArgs interface
+
+func (t *UnzipConfig) GetZipFile() *zip.File {
+	return t.zipFile
+}
+
+func (t *UnzipConfig) GetOutputPath() string {
+	return t.OutputPath
+}
+
+func (t *UnzipConfig) GetEncoding() string {
+	return t.FileEncoding
+}
+
+func (t *UnzipConfig) GetPassword() []byte {
+	return t.password
+}
+
+func (t *UnzipConfig) OnFileName(name string) bool {
+	if t.filePattern == "" || strings.Contains(name, t.filePattern) {
+		return true
+	}
+	return false
+}
+
+func (t *UnzipConfig) toZipFileProcessArgs(file *zip.File, password []byte, filePattern string) {
+	t.zipFile = file
+	t.password = password
+	t.filePattern = filePattern
 }
 
 // usage prints the application's usage information.
@@ -73,11 +110,14 @@ func parseAndValidateFlags() (*UnzipConfig, string, error) {
 
 	fs.Parse(args)
 
-	if fs.NArg() != 1 {
+	if fs.NArg() < 1 {
 		fs.Usage()
 		return nil, "", fmt.Errorf("需要指定一个zip文件")
 	}
 	config.ZipPath = fs.Arg(0)
+	if fs.NArg() > 1 {
+		config.ZipFile = fs.Arg(1)
+	}
 
 	if config.Workers < 1 {
 		return nil, "", fmt.Errorf("工作线程数必须大于0")
@@ -112,8 +152,15 @@ func processFile(file *zip.File, config *UnzipConfig, password []byte, wg *sync.
 			utils.Errorf("File %s is encrypted but no password provided\n", name)
 		}
 		file.SetPassword(password)
+		if file.UncompressedSize64 > 1*1024*1024*1024 {
+			file.DeferAuth = true
+		}
 	}
-	outFile, err := internal.ProcessSingleFile(file, config.OutputPath, config.FileEncoding, password)
+	config.toZipFileProcessArgs(file, password, config.ZipFile)
+	outFile, err := internal.ProcessSingleFile(config)
+	if outFile == "" {
+		return
+	}
 	if err != nil {
 		utils.Error("解压文件 %s 失败: %v", file.Name, err)
 		return
@@ -133,11 +180,14 @@ func processFile(file *zip.File, config *UnzipConfig, password []byte, wg *sync.
 			utils.Error("文件校验不通过 %s", fileName)
 		}
 	}
-	utils.Info(fileName)
 }
 
 // 主解压函数
 func unzip(config *UnzipConfig) error {
+	// stat, err := os.Lstat(config.ZipPath)
+	// if err != nil {
+	// 	return utils.Errorf("获取zip文件信息失败: %v", err)
+	// }
 	// 打开zip文件
 	reader, err := zip.OpenReader(config.ZipPath)
 	if err != nil {
